@@ -13,6 +13,7 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <ratio>
 #include <stdexcept>
 #include <vector>
 
@@ -95,7 +96,7 @@ struct Config {
     uint32_t scaleFactor{20};
     bool useScanline {true};
     chip8::graphics::colors::Color scanline {0x0f, 0x0f, 0x0f, 0xff}; 
-    chip8::graphics::colors::Color fgColor = chip8::graphics::colors::WHITE;
+    chip8::graphics::colors::Color fgColor = chip8::graphics::colors::RED;
     chip8::graphics::colors::Color bgColor = chip8::graphics::colors::BLACK;
 };
 
@@ -301,6 +302,27 @@ class Emulator {
         }
     }
 
+    void Assignment(uint16_t instr) {
+        // 1->OR, 2->AND, 3->XOR
+        // 8XY1, 8XY2, 8XY3
+        uint8_t x = SECOND_NIBBLE(instr);
+        uint8_t y = THIRD_NIBBLE(instr);
+        uint8_t op = FOURTH_NIBBLE(instr);
+
+        if (op == 0) {
+            cpu.V[x] = cpu.V[y];
+        } else if (op == 1) {
+            cpu.V[x] |= cpu.V[y];
+        } else if (op == 2) {
+            cpu.V[x] &= cpu.V[y];
+        } else if (op == 3) {
+            cpu.V[x] ^= cpu.V[y];
+        } else {
+            std::cerr << "[error] :: unimplemented operator\n";
+        }
+
+    }
+
     void Add(uint16_t instr) {
         auto reg = SECOND_NIBBLE(instr); assert(0 <= reg && reg < 0xf0);
         cpu.V[reg] += LSB(instr);
@@ -362,24 +384,20 @@ class Emulator {
             // Fecth the next instruction. The instruction has 4 nibbles.
             uint16_t instr = memory.Read16(cpu.PC);
             cpu.PC += 2;
+
             // Decode the instruction
-
-            std::cerr << "Fetched instr: "; utility::PrintHex(instr); std::cerr << std::endl;
-
-            auto opcode = FIRST_NIBBLE(instr);
-
+            uint8_t opcode = FIRST_NIBBLE(instr);
             switch (opcode) {
-                case 0x00: {
+                case 0x0: {
                     // Clear Screen
                     if (instr == 0x00E0) ClearScreen();
                     break;
                 }
-                case 0x01: {
+                case 0x1: {
                     Jump(instr);
                     break;
                 }
                 case 0x6: {
-                    // SET Register 0x6XNN
                     SetVRegister(instr);
                     break;
                 }
@@ -387,18 +405,21 @@ class Emulator {
                     Add(instr);
                     break;
                 }
+                case 0x8: {
+                    Assignment(instr);
+                    break;
+                }
                 case 0xA: {
                     SetIndexRegister(instr);
                     break;
                 }
                 case 0xD: {
-                    // DXYN display/draw
                     DrawPixels(instr);
                     break;
                 }
                 default: {
                     std::cerr << "Not implemented yet: " << opcode << "\n";
-                    std::exit(EXIT_FAILURE);
+                    break;
                 }
             }
 
