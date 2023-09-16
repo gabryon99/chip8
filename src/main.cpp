@@ -21,15 +21,17 @@
 #include "SDL2/SDL_timer.h"
 #include "SDL2/SDL_video.h"
 
+#define CARRY_FLAG 0x0f
+
 #define PACK16(msb, lsb) (((uint16_t)(msb) << 0x08) | lsb)
 
-#define FIRST_NIBBLE(data) ((data >> 0x0c) & 0x0f)
+#define FIRST_NIBBLE(data)  ((data >> 0x0c) & 0x0f)
 #define SECOND_NIBBLE(data) ((data >> 0x08) & 0x0f)
-#define THIRD_NIBBLE(data) ((data >> 0x04) & 0x0f)
+#define THIRD_NIBBLE(data)  ((data >> 0x04) & 0x0f)
 #define FOURTH_NIBBLE(data) ((data >> 0x00) & 0x0f)
 
-#define LSB(data) (data & 0x08)
-#define MSB(data) ((data >> 0x08) & 0x08)
+#define LSB(data) ((data & 0xff))
+#define MSB(data) ((data >> 0x08) & 0xff)
 
 #define TWELVE(data) (data & 0xfff)
 
@@ -197,18 +199,18 @@ struct Cpu {
     static constexpr size_t STARTING_PC = 0x200;
 
     /// Points at current instruction in memory.
-    size_t programCounter{STARTING_PC};
+    size_t PC{STARTING_PC};
     /// Whic points to used instruction in memory (can address only 12 bits).
-    uint16_t indexRegister{0};
+    uint16_t I{0};
     /// Decremented at rate of 60hz until it reaches 0.
     uint8_t delayTimer{0};
     /// Decremented at rate of 60hz until it reaches 0.
     uint8_t soundTimer{0};
     /// Named V0, V1, V2, ..., VF (used as flag register).
-    std::array<uint8_t, 0x10> generalPurposeRegisters;
+    std::array<uint8_t, 0x10> V;
 
     Cpu() {
-        std::fill_n(generalPurposeRegisters.begin(), generalPurposeRegisters.size(), 0);
+        std::fill_n(V.begin(), V.size(), 0);
     }
 };
 
@@ -273,6 +275,14 @@ class Emulator {
 
     Status currentStatuts{Status::PAUSED};
 
+    void ClearScreen() {
+        for (std::size_t x = 0; x < chip8::display::DISPLAY_WIDTH; x++) {
+            for (std::size_t y = 0; y < chip8::display::DISPLAY_HEIGHT; y++) {
+                screen.Draw(x, y, false);
+            }
+        }
+    }
+
    public:
     void LoadFont(const chip8::graphics::fonts::Font font) {
         memory.WriteBytes(font, 0x50);
@@ -290,7 +300,7 @@ class Emulator {
                     std::exit(EXIT_FAILURE);
                 }
                 if (event.type == SDL_KEYDOWN) {
-                    if (event.key.keysym.sym == SDLK_ESCAPE) {
+                    if (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
                         std::exit(EXIT_FAILURE);
                     }
                 }
@@ -299,8 +309,8 @@ class Emulator {
             auto start = std::chrono::steady_clock::now();
 
             // Fecth the next instruction. The instruction has 4 nibbles.
-            uint16_t instr = memory.Read16(cpu.programCounter);
-            cpu.programCounter += 2;
+            uint16_t instr = memory.Read16(cpu.PC);
+            cpu.PC += 2;
             // Decode the instruction
 
             std::cerr << "Fetched instr: "; utility::PrintHex(instr); std::cerr << std::endl;
@@ -309,50 +319,61 @@ class Emulator {
 
             switch (opcode) {
                 case 0x00: {
-                    if (instr == 0x00E0) {
-                        for (std::size_t x = 0; x < chip8::display::DISPLAY_WIDTH; x++) {
-                            for (std::size_t y = 0; y < chip8::display::DISPLAY_HEIGHT; y++) {
-                                screen.Draw(x, y, false);
-                            }
-                        }
-                    }
+                    // Clear Screen
+                    if (instr == 0x00E0) ClearScreen();
                     break;
                 }
                 case 0x01: {
                     // JUMP
-                    cpu.programCounter = TWELVE(instr);
+                    cpu.PC = TWELVE(instr);
                     break;
                 }
                 case 0x6: {
                     // SET Register 0x6XNN
-                    auto reg = SECOND_NIBBLE(instr);
-                    assert(0 <= reg && reg < 0xf0);
+                    auto reg = SECOND_NIBBLE(instr); assert(0 <= reg && reg < 0xf0);
                     auto value = LSB(instr);
-                    cpu.generalPurposeRegisters[reg] = value;
+                    cpu.V[reg] = value;
+#ifdef DEBUG
                     std::cerr << "Reg["; utility::PrintHex(reg, 2); std::cerr << "] = "; utility::PrintHex(value); std::cerr << std::endl;
+#endif
                     break;
                 }
                 case 0x7: {
-                    // ADD Value to Register
+                    // 0x7XNN
+                    auto reg = SECOND_NIBBLE(instr); assert(0 <= reg && reg < 0xf0);
+                    cpu.V[reg] += LSB(instr);
                     break;
                 }
                 case 0xA: {
-                    // SET Index Register I (ANNN)
-                    cpu.indexRegister = TWELVE(instr);
+                    cpu.I = TWELVE(instr); // SET Index Register I (0xANNN)
                     break;
                 }
                 case 0xD: {
                     // DXYN display/draw
-                    auto x = cpu.generalPurposeRegisters[SECOND_NIBBLE(instr)] & (chip8::display::DISPLAY_WIDTH - 1);
-                    auto y = cpu.generalPurposeRegisters[THIRD_NIBBLE(instr)] & (chip8::display::DISPLAY_HEIGHT - 1);
-                    auto rows = FOURTH_NIBBLE(instr);
+                    const uint8_t x = cpu.V[SECOND_NIBBLE(instr)] % (chip8::display::DISPLAY_WIDTH);
+                    const uint8_t y = cpu.V[THIRD_NIBBLE(instr)] % (chip8::display::DISPLAY_HEIGHT);
+                    const uint8_t n = FOURTH_NIBBLE(instr);
+                    uint8_t y0 = y;
 
-                    cpu.generalPurposeRegisters[0x0f] = 0;
+                    cpu.V[CARRY_FLAG] = 0;
 
-                    for (std::size_t i = 0; i < rows; i++) {
-                        
+                    for (std::size_t i = 0; i < n; i++) {
+
+                        const uint8_t spriteRow = memory.Read8(cpu.I + i);
+                        uint8_t x0 = x;
+
+                        for (int8_t j = 7; j >= 0; j--) {
+                            bool pixel = screen.ReadPixel(x0, y0);
+                            uint8_t spriteBit = (spriteRow & (1 << j));
+                            if (spriteBit && pixel) {
+                                cpu.V[CARRY_FLAG] = 0x1;
+                            }
+                            screen.Draw(x0, y0, pixel ^ spriteBit);
+                            if (++x0 >= chip8::display::DISPLAY_WIDTH) break;
+                        }
+
+                        if (++y0 >= chip8::display::DISPLAY_HEIGHT) break;
                     }
-
                     break;
                 }
                 default: {
