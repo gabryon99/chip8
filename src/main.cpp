@@ -1,5 +1,6 @@
 #include <SDL2/SDL.h>
 
+#include <_types/_uint16_t.h>
 #include <_types/_uint8_t.h>
 #include <algorithm>
 #include <array>
@@ -275,11 +276,61 @@ class Emulator {
 
     Status currentStatuts{Status::PAUSED};
 
+    void Jump(uint16_t instr) {
+        cpu.PC = TWELVE(instr);
+    }
+
+    void SetVRegister(uint16_t instr) {
+        auto reg = SECOND_NIBBLE(instr); assert(0 <= reg && reg < 0xf0);
+        auto value = LSB(instr);
+        cpu.V[reg] = value;
+#ifdef DEBUG
+        std::cerr << "Reg["; utility::PrintHex(reg, 2); std::cerr << "] = "; utility::PrintHex(value); std::cerr << std::endl;
+#endif
+    }
+
+    void SetIndexRegister(uint16_t instr) {
+        cpu.I = TWELVE(instr); // SET Index Register I (0xANNN)
+    }
+
     void ClearScreen() {
         for (std::size_t x = 0; x < chip8::display::DISPLAY_WIDTH; x++) {
             for (std::size_t y = 0; y < chip8::display::DISPLAY_HEIGHT; y++) {
                 screen.Draw(x, y, false);
             }
+        }
+    }
+
+    void Add(uint16_t instr) {
+        auto reg = SECOND_NIBBLE(instr); assert(0 <= reg && reg < 0xf0);
+        cpu.V[reg] += LSB(instr);
+    }
+
+    void DrawPixels(uint16_t instr) {
+
+        const uint8_t x = cpu.V[SECOND_NIBBLE(instr)] % (chip8::display::DISPLAY_WIDTH);
+        const uint8_t y = cpu.V[THIRD_NIBBLE(instr)] % (chip8::display::DISPLAY_HEIGHT);
+        const uint8_t n = FOURTH_NIBBLE(instr);
+        uint8_t y0 = y;
+
+        cpu.V[CARRY_FLAG] = 0;
+
+        for (std::size_t i = 0; i < n; i++) {
+
+            const uint8_t spriteRow = memory.Read8(cpu.I + i);
+            uint8_t x0 = x;
+
+            for (int8_t j = 7; j >= 0; j--) {
+                bool pixel = screen.ReadPixel(x0, y0);
+                uint8_t spriteBit = (spriteRow & (1 << j));
+                if (spriteBit && pixel) {
+                    cpu.V[CARRY_FLAG] = 0x1;
+                }
+                screen.Draw(x0, y0, pixel ^ spriteBit);
+                if (++x0 >= chip8::display::DISPLAY_WIDTH) break;
+            }
+
+            if (++y0 >= chip8::display::DISPLAY_HEIGHT) break;
         }
     }
 
@@ -324,56 +375,25 @@ class Emulator {
                     break;
                 }
                 case 0x01: {
-                    // JUMP
-                    cpu.PC = TWELVE(instr);
+                    Jump(instr);
                     break;
                 }
                 case 0x6: {
                     // SET Register 0x6XNN
-                    auto reg = SECOND_NIBBLE(instr); assert(0 <= reg && reg < 0xf0);
-                    auto value = LSB(instr);
-                    cpu.V[reg] = value;
-#ifdef DEBUG
-                    std::cerr << "Reg["; utility::PrintHex(reg, 2); std::cerr << "] = "; utility::PrintHex(value); std::cerr << std::endl;
-#endif
+                    SetVRegister(instr);
                     break;
                 }
                 case 0x7: {
-                    // 0x7XNN
-                    auto reg = SECOND_NIBBLE(instr); assert(0 <= reg && reg < 0xf0);
-                    cpu.V[reg] += LSB(instr);
+                    Add(instr);
                     break;
                 }
                 case 0xA: {
-                    cpu.I = TWELVE(instr); // SET Index Register I (0xANNN)
+                    SetIndexRegister(instr);
                     break;
                 }
                 case 0xD: {
                     // DXYN display/draw
-                    const uint8_t x = cpu.V[SECOND_NIBBLE(instr)] % (chip8::display::DISPLAY_WIDTH);
-                    const uint8_t y = cpu.V[THIRD_NIBBLE(instr)] % (chip8::display::DISPLAY_HEIGHT);
-                    const uint8_t n = FOURTH_NIBBLE(instr);
-                    uint8_t y0 = y;
-
-                    cpu.V[CARRY_FLAG] = 0;
-
-                    for (std::size_t i = 0; i < n; i++) {
-
-                        const uint8_t spriteRow = memory.Read8(cpu.I + i);
-                        uint8_t x0 = x;
-
-                        for (int8_t j = 7; j >= 0; j--) {
-                            bool pixel = screen.ReadPixel(x0, y0);
-                            uint8_t spriteBit = (spriteRow & (1 << j));
-                            if (spriteBit && pixel) {
-                                cpu.V[CARRY_FLAG] = 0x1;
-                            }
-                            screen.Draw(x0, y0, pixel ^ spriteBit);
-                            if (++x0 >= chip8::display::DISPLAY_WIDTH) break;
-                        }
-
-                        if (++y0 >= chip8::display::DISPLAY_HEIGHT) break;
-                    }
+                    DrawPixels(instr);
                     break;
                 }
                 default: {
