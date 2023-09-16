@@ -1,0 +1,4 @@
+CompileFlags: # Tweak the parse settings
+  Add: 
+    - "--include-directory=/opt/homebrew/include"
+    - "-std=c++17"

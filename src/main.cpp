@@ -1,7 +1,9 @@
 #include <SDL2/SDL.h>
 
+#include <_types/_uint8_t.h>
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +13,7 @@
 #include <iterator>
 #include <optional>
 #include <stdexcept>
+#include <vector>
 
 #include "SDL2/SDL_error.h"
 #include "SDL2/SDL_events.h"
@@ -18,7 +21,7 @@
 #include "SDL2/SDL_timer.h"
 #include "SDL2/SDL_video.h"
 
-#define PACK16(first, second) (((uint16_t)(first) << 0x08) | second)
+#define PACK16(msb, lsb) (((uint16_t)(msb) << 0x08) | lsb)
 
 #define FIRST_NIBBLE(data) ((data >> 0x0c) & 0x0f)
 #define SECOND_NIBBLE(data) ((data >> 0x08) & 0x0f)
@@ -29,6 +32,13 @@
 #define MSB(data) ((data >> 0x08) & 0x08)
 
 #define TWELVE(data) (data & 0xfff)
+
+namespace utility {
+    template<typename T>
+    void PrintHex(T value, uint8_t trailing = 4) {
+        std::cerr << "0x" << std::setfill('0') << std::setw(trailing) << std::right << std::hex << value << std::resetiosflags(std::ios::showbase);
+    }
+}
 
 namespace chip8 {
 
@@ -80,6 +90,8 @@ constexpr Color BLUE = {0x00, 0x00, 0xff, 0xff};
 
 struct Config {
     uint32_t scaleFactor{20};
+    bool useScanline {true};
+    chip8::graphics::colors::Color scanline {0x0f, 0x0f, 0x0f, 0xff}; 
     chip8::graphics::colors::Color fgColor = chip8::graphics::colors::WHITE;
     chip8::graphics::colors::Color bgColor = chip8::graphics::colors::BLACK;
 };
@@ -89,12 +101,14 @@ constexpr std::uint32_t DISPLAY_WIDTH = 64;
 constexpr std::uint32_t DISPLAY_HEIGHT = 32;
 
 class Screen {
+    std::array<bool, DISPLAY_WIDTH * DISPLAY_HEIGHT> data{};
     SDL_Window* windowHandle{nullptr};
     SDL_Renderer* renderer{nullptr};
     Config config;
 
    public:
     Screen(Config c, const char* title = "Chip8++") : config{c} {
+        std::fill_n(data.begin(), data.size(), 0);
         if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
             throw std::runtime_error{SDL_GetError()};
         }
@@ -136,9 +150,43 @@ class Screen {
         }
     }
 
+    bool ReadPixel(std::size_t x, std::size_t y) {
+        return data[DISPLAY_HEIGHT * x + y];
+    }
+
+    void Draw(std::size_t x, std::size_t y, bool value) {
+        data[DISPLAY_HEIGHT * x + y] = value;
+    }
+
     void Delay(uint32_t deltaTime = 0) { SDL_Delay(16 + deltaTime); }
 
-    void Update() { SDL_RenderPresent(renderer); }
+    void Update() { 
+
+        CleanScreen();
+
+        // Draw pixels on screen
+        auto [r, g, b, a] = config.fgColor;
+
+        for (std::size_t x = 0; x < DISPLAY_WIDTH; x++) {
+            for (std::size_t y = 0; y < DISPLAY_HEIGHT; y++) {
+                SDL_Rect rect{};
+                rect.x = x * config.scaleFactor;
+                rect.y = y * config.scaleFactor;
+                rect.h = config.scaleFactor;
+                rect.w = config.scaleFactor;
+                if (ReadPixel(x, y)) {
+                    SDL_SetRenderDrawColor(renderer, r, g, b, a);
+                    SDL_RenderFillRect(renderer, &rect);
+                }
+                if (config.useScanline) {
+                    auto [r, g, b, a] = config.scanline;
+                    SDL_SetRenderDrawColor(renderer, r, g, b, a);
+                    SDL_RenderDrawRect(renderer, &rect);
+                }
+            }
+        }
+        SDL_RenderPresent(renderer); 
+    }
 };
 
 }  // namespace display
@@ -157,7 +205,11 @@ struct Cpu {
     /// Decremented at rate of 60hz until it reaches 0.
     uint8_t soundTimer{0};
     /// Named V0, V1, V2, ..., VF (used as flag register).
-    std::array<uint8_t, 0x10> generalPurposeRegisters{0};
+    std::array<uint8_t, 0x10> generalPurposeRegisters;
+
+    Cpu() {
+        std::fill_n(generalPurposeRegisters.begin(), generalPurposeRegisters.size(), 0);
+    }
 };
 
 class Memory {
@@ -165,8 +217,23 @@ class Memory {
     std::array<uint8_t, MEMORY_SIZE> data{0};
 
    public:
-    constexpr uint8_t Read(const std::size_t address) const {
+    constexpr uint8_t Read8(const std::size_t address) const {
         return data[address];
+    }
+
+    constexpr uint16_t Read16(const std::size_t address) const {
+        return PACK16(data[address], data[address + 1]);
+    }
+
+    constexpr void Write8(const std::size_t address, const uint8_t value) {
+        data[address] = value;
+    }
+
+    constexpr void Write16(const std::size_t address, const uint16_t value) {
+        uint8_t msb = (value >> 8) & 0xff;
+        uint8_t lsb = (value >> 0) & 0xff;
+        data[address] = msb;
+        data[address + 1] = lsb;
     }
 
     template <size_t Size>
@@ -216,34 +283,53 @@ class Emulator {
     }
 
     void Run() {
-        screen.CleanScreen();
 
         while (currentStatuts != Status::STOPPED) {
             screen.PollEvent([](SDL_Event& event) {
                 if (event.type == SDL_QUIT) {
                     std::exit(EXIT_FAILURE);
                 }
+                if (event.type == SDL_KEYDOWN) {
+                    if (event.key.keysym.sym == SDLK_ESCAPE) {
+                        std::exit(EXIT_FAILURE);
+                    }
+                }
             });
-
-            if (currentStatuts == Status::PAUSED) continue;
 
             auto start = std::chrono::steady_clock::now();
 
             // Fecth the next instruction. The instruction has 4 nibbles.
-            uint16_t instr = PACK16(memory.Read(cpu.programCounter),
-                                    memory.Read(cpu.programCounter + 1));
+            uint16_t instr = memory.Read16(cpu.programCounter);
             cpu.programCounter += 2;
             // Decode the instruction
+
+            std::cerr << "Fetched instr: "; utility::PrintHex(instr); std::cerr << std::endl;
 
             auto opcode = FIRST_NIBBLE(instr);
 
             switch (opcode) {
+                case 0x00: {
+                    if (instr == 0x00E0) {
+                        for (std::size_t x = 0; x < chip8::display::DISPLAY_WIDTH; x++) {
+                            for (std::size_t y = 0; y < chip8::display::DISPLAY_HEIGHT; y++) {
+                                screen.Draw(x, y, false);
+                            }
+                        }
+                    }
+                    break;
+                }
                 case 0x01: {
                     // JUMP
+                    cpu.programCounter = TWELVE(instr);
                     break;
                 }
                 case 0x6: {
-                    // SET Register
+                    // SET Register 0x6XNN
+                    auto reg = SECOND_NIBBLE(instr);
+                    assert(0 <= reg && reg < 0xf0);
+                    auto value = LSB(instr);
+                    cpu.generalPurposeRegisters[reg] = value;
+                    std::cerr << "Reg["; utility::PrintHex(reg, 2); std::cerr << "] = "; utility::PrintHex(value); std::cerr << std::endl;
                     break;
                 }
                 case 0x7: {
@@ -257,6 +343,16 @@ class Emulator {
                 }
                 case 0xD: {
                     // DXYN display/draw
+                    auto x = cpu.generalPurposeRegisters[SECOND_NIBBLE(instr)] & (chip8::display::DISPLAY_WIDTH - 1);
+                    auto y = cpu.generalPurposeRegisters[THIRD_NIBBLE(instr)] & (chip8::display::DISPLAY_HEIGHT - 1);
+                    auto rows = FOURTH_NIBBLE(instr);
+
+                    cpu.generalPurposeRegisters[0x0f] = 0;
+
+                    for (std::size_t i = 0; i < rows; i++) {
+                        
+                    }
+
                     break;
                 }
                 default: {
