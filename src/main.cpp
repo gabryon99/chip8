@@ -1,5 +1,4 @@
 #include <SDL2/SDL.h>
-#include <_types/_uint16_t.h>
 
 #include <algorithm>
 #include <array>
@@ -15,6 +14,7 @@
 #include <ratio>
 #include <stdexcept>
 #include <vector>
+#include <cstdlib>
 
 #include "SDL2/SDL_error.h"
 #include "SDL2/SDL_events.h"
@@ -92,10 +92,12 @@ constexpr Color BLUE = {0x00, 0x00, 0xff, 0xff};
 }  // namespace graphics
 
 struct Config {
-    uint32_t scaleFactor{20};
+    static constexpr uint32_t DEFAULT_SCALE_FACTOR = 20;
+
+    uint32_t scaleFactor{DEFAULT_SCALE_FACTOR};
     bool useScanline{true};
     chip8::graphics::colors::Color scanline{0x0f, 0x0f, 0x0f, 0xff};
-    chip8::graphics::colors::Color fgColor = chip8::graphics::colors::RED;
+    chip8::graphics::colors::Color fgColor = chip8::graphics::colors::GREEN;
     chip8::graphics::colors::Color bgColor = chip8::graphics::colors::BLACK;
 };
 
@@ -189,7 +191,9 @@ class Screen {
 namespace system {
 
 struct Cpu {
-    static constexpr size_t STARTING_PC = 0x200;
+    static constexpr std::size_t STARTING_PC = 0x200;
+    static constexpr std::size_t NUMBER_OF_V_REGISTERS = 0x10;
+    static constexpr std::size_t STACK_SIZE = 0x10;
 
     /// Points at current instruction in memory.
     std::size_t PC{STARTING_PC};
@@ -202,9 +206,9 @@ struct Cpu {
     /// Decremented at rate of 60hz until it reaches 0.
     uint8_t soundTimer{0};
     /// Named V0, V1, V2, ..., VF (used as flag register).
-    std::array<uint8_t, 0x10> V;
+    std::array<uint8_t, NUMBER_OF_V_REGISTERS> V;
     /// The stack is an aray of 16bit 16 value (that means up to 16 subroutines nested).
-    std::array<uint16_t, 0x10> stack;
+    std::array<uint16_t, STACK_SIZE> stack;
 
     explicit Cpu() {
         std::fill_n(V.begin(), V.size(), 0);
@@ -253,7 +257,7 @@ class Memory {
 }  // namespace system
 
 class Emulator {
-    enum class Status { RUNNING, PAUSED, STOPPED };
+    enum class Status { RUNNING, PAUSED, WAITING_FOR_KEY, STOPPED };
 
     Config config{};
 
@@ -263,10 +267,10 @@ class Emulator {
 
     Status currentStatuts{Status::PAUSED};
 
-    void Jump(uint16_t instr, bool hasOffset = false) { 
+    void Jump(uint16_t instr, bool hasOffset = false) {
         auto offset = (hasOffset) ? cpu.V[0] : 0;
         cpu.PC = TWELVE(instr) + offset;
-     }
+    }
 
     void LoadIntoV(uint16_t instr) {
         auto reg = SECOND_NIBBLE(instr);
@@ -408,7 +412,56 @@ class Emulator {
         }
     }
 
+    void Random(uint16_t instr) {
+        auto lsb = LSB(instr);
+        auto rnd = std::rand() % 0x100;
+        cpu.V[SECOND_NIBBLE(instr)] = lsb & rnd;
+    }
+
+    void FDispatcher(uint16_t instr) {
+        switch (LSB(instr)) {
+            case 0x15: {
+                // Fx15 - Set delay timer
+                cpu.delayTimer = cpu.V[SECOND_NIBBLE(instr)];
+                break;
+            }
+            case 0x18: {
+                // Fx18 - Set sound timer
+                cpu.soundTimer = cpu.V[SECOND_NIBBLE(instr)];
+                break;
+            }
+            case 0x1e: {
+                // Fx1E - ADD I, Vx
+                cpu.I += cpu.V[SECOND_NIBBLE(instr)];
+                break;
+            }
+            case 0x55: {
+                // Fx55 - LD [I], Vx
+                for (std::size_t i = 0; i < SECOND_NIBBLE(instr); i++) {
+                    memory.Write8(i + cpu.I, cpu.V[i]);
+                }
+                break;
+            }
+            case 0x65: {
+                // Fx65 - LD Vx, [I]
+                for (std::size_t i = 0; i < SECOND_NIBBLE(instr); i++) {
+                    cpu.V[i] = memory.Read8(i + cpu.I);
+                }
+                break;
+            }
+            default: {
+                std::cerr << "[error] :: Not implemented yet: 0x" << std::hex << instr << ".\n";
+                //std::exit(-1);
+                break;
+            }
+        }
+    }
+
    public:
+    explicit Emulator() {
+        std::srand(std::time(nullptr));
+    }
+
     void LoadFont(const chip8::graphics::fonts::Font font) { memory.WriteBytes(font, 0x50); }
 
     void LoadRom(const std::vector<uint8_t>&& rom) {
@@ -487,13 +540,18 @@ class Emulator {
                     Jump(instr, true);
                     break;
                 }
+                case 0xC: {
+                    Random(instr);
+                    break;
+                }
                 case 0xD: {
                     DrawPixels(instr);
                     break;
                 }
                 default: {
                     std::cerr << "[error] :: Not implemented yet: 0x" << std::hex << instr << ".\n";
-                    std::exit(-1);
+                    //std::exit(-1);
+                    break;
                 }
             }
 
