@@ -15,4 +15,5 @@ and draw sprites on the screen.
 - [ ] Separate namespace in different files.
 - [ ] Creating a CMake file.
 - [ ] Run on other platforms (e.g., Linux).
+- [ ] Experiment other emulation techniques for the main fetch-decode-execute loop: threaded-code, just-in-time compilation...
 
