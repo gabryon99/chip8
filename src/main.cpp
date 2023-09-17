@@ -53,6 +53,7 @@ namespace debugger {};
 namespace graphics {
 namespace fonts {
 using Font = std::array<uint8_t, 80>;
+constexpr std::size_t FONT_ADDRESS_OFFSET = 0x50;
 constexpr Font DEFAULT = {
     0xF0, 0x90, 0x90, 0x90, 0xF0,  // 0
     0x20, 0x60, 0x20, 0x20, 0x70,  // 1
@@ -155,6 +156,10 @@ class Screen {
     }
 
     bool ReadPixel(std::size_t x, std::size_t y) { return data[DISPLAY_HEIGHT * x + y]; }
+
+    void DrawAll(bool value) {
+        std::fill_n(data.begin(), data.size(), value);
+    }
 
     void Draw(std::size_t x, std::size_t y, bool value) { data[DISPLAY_HEIGHT * x + y] = value; }
 
@@ -275,6 +280,9 @@ class Emulator {
     void Jump(uint16_t instr, bool hasOffset = false) {
         auto offset = (hasOffset) ? cpu.V[0] : 0;
         cpu.PC = TWELVE(instr) + offset;
+#ifdef DEBUG
+        std::fprintf(stdout, "[info] :: jumping to address '0x%x'\n", TWELVE(instr) + offset);
+#endif
     }
 
     void LoadIntoV(uint16_t instr) {
@@ -289,23 +297,29 @@ class Emulator {
     }
 
     void ClearScreen(uint16_t) {
-        for (std::size_t x = 0; x < chip8::display::DISPLAY_WIDTH; x++) {
-            for (std::size_t y = 0; y < chip8::display::DISPLAY_HEIGHT; y++) {
-                screen.Draw(x, y, false);
-            }
-        }
+        screen.DrawAll(false);
+#ifdef DEBUG
+        std::fprintf(stdout, "[info] :: cleaning screen...\n");
+#endif
     }
 
     void Call(uint16_t instr) {
         auto address = TWELVE(instr);
-        cpu.stack[cpu.SP++] = cpu.PC;
+        cpu.SP++;
+        cpu.stack[cpu.SP] = cpu.PC;
         cpu.PC = address;
-        std::cerr << "[info] calling routine at: 0x" << std::hex << address << std::endl;
+#ifdef DEBUG
+        std::cerr << "[info] :: calling routine at: 0x" << std::hex << address << std::endl;
+#endif
     }
 
     void ReturnFromRoutine(uint16_t) {
         // Return from Subroutine
-        cpu.PC = cpu.stack[cpu.SP--];
+        cpu.PC = cpu.stack[cpu.SP];
+#ifdef DEBUG
+        std::fprintf(stdout, "[info] :: returning to '0x%lx'\n", cpu.PC);
+#endif
+        cpu.SP--;
     }
 
     void Assignment8(uint16_t instr) {
@@ -333,41 +347,75 @@ class Emulator {
                 break;
             }
             case 0x4: {
-                std::cerr << "[error] :: unimplemented operator\n";
-                //std::exit(-1);
+                // 8xy4 - ADD Vx, Vy
+                // Set Vx = Vx + Vy, set VF = carry.
+                uint8_t vx = cpu.V[x], vy = cpu.V[y];
+                if (static_cast<uint16_t>(vx) + static_cast<uint16_t>(vy) > 0xff) {
+                    cpu.V[0xf] = 1;
+                } else {
+                    cpu.V[0xf] = 0;
+                }
+                cpu.V[x] = vx + vy;
                 break;
             }
             case 0x5: {
-                std::cerr << "[error] :: unimplemented operator\n";
-                //std::exit(-1);
+                // 8xy5 - SUB Vx, Vy
+                // Set Vx = Vx - Vy, set VF = NOT borrow.
+                uint8_t vx = cpu.V[x], vy = cpu.V[y];
+                if (vx > vy) {
+                    cpu.V[0xf] = 1;
+                } else {
+                    cpu.V[0xf] = 0;
+                }
+                cpu.V[x] = vx - vy;
                 break;
             }
             case 0x6: {
-                std::cerr << "[error] :: unimplemented operator\n";
-                //std::exit(-1);
+                // 8xy6 - SHR Vx {, Vy}
+                // Set Vx = Vx SHR 1.
+                uint8_t vx = cpu.V[x];
+                if (vx & 1) {
+                    cpu.V[0xf] = 1;
+                } else {
+                    cpu.V[0xf] = 0;
+                }
+                cpu.V[x] = vx >> 1;
                 break;
             }
             case 0x7: {
-                std::cerr << "[error] :: unimplemented operator\n";
-                //std::exit(-1);
+                // 8xy7 - SUBN Vx, Vy
+                // Set Vx = Vy - Vx, set VF = NOT borrow.
+                uint8_t vx = cpu.V[x], vy = cpu.V[y];
+                if (vy > vx) {
+                    cpu.V[0xf] = 1;
+                } else {
+                    cpu.V[0xf] = 0;
+                }
+                cpu.V[x] = vy - vx;
                 break;
             }
             case 0xE: {
-                std::cerr << "[error] :: unimplemented operator\n";
-                //std::exit(-1);
+                // 8xyE - SHL Vx {, Vy}
+                // Set Vx = Vx SHL 1.
+                uint8_t vx = cpu.V[x];
+                if ((vx >> 0x7) & 1) {
+                    cpu.V[0xf] = 1;
+                } else {
+                    cpu.V[0xf] = 0;
+                }
+                cpu.V[x] = vx << 1;
                 break;
             }
             default: {
                 std::cerr << "[error] :: unimplemented operator\n";
-                //std::exit(-1);
-                break;
+                std::exit(-1);
             }
         }
     }
 
     void Add(uint16_t instr) {
         auto reg = SECOND_NIBBLE(instr);
-        assert(0 <= reg && reg < 0xf0);
+        assert(0x0 <= reg && reg <= 0xf);
         cpu.V[reg] += LSB(instr);
     }
 
@@ -425,6 +473,11 @@ class Emulator {
 
     void FDispatcher(uint16_t instr) {
         switch (LSB(instr)) {
+            case 0x07: {
+                // Set Vx = delay timer value.
+                cpu.V[SECOND_NIBBLE(instr)] = cpu.delayTimer;
+                break;
+            }
             case 0x0A: {
                 // FX0A
                 destinationKeyRegister = SECOND_NIBBLE(instr);
@@ -446,6 +499,22 @@ class Emulator {
                 cpu.I += cpu.V[SECOND_NIBBLE(instr)];
                 break;
             }
+            case 0x29: {
+                // Fx29 - LD F, Vx
+                // Set I = location of sprite for digit Vx.
+                uint8_t vx = cpu.V[SECOND_NIBBLE(instr)];
+                cpu.I = static_cast<uint16_t>(vx) * 5 + graphics::fonts::FONT_ADDRESS_OFFSET;
+                break;
+            }
+            case 0x33: {
+                // Fx33 - LD B, Vx
+                // Store BCD representation of Vx in memory locations I, I+1, and I+2.
+                uint8_t vx = cpu.V[SECOND_NIBBLE(instr)];
+                memory.Write8(cpu.I, static_cast<uint8_t>(static_cast<uint16_t>((vx % 1000) / 100)));
+                memory.Write8(cpu.I + 1, (vx % 100) / 10);
+                memory.Write8(cpu.I + 2, vx % 10);
+                break;
+            }
             case 0x55: {
                 // Fx55 - LD [I], Vx
                 for (std::size_t i = 0; i < SECOND_NIBBLE(instr); i++) {
@@ -462,8 +531,7 @@ class Emulator {
             }
             default: {
                 std::cerr << "[error] :: Not implemented yet: 0x" << std::hex << instr << ".\n";
-                //std::exit(-1);
-                break;
+                std::exit(-1);
             }
         }
     }
@@ -493,7 +561,7 @@ class Emulator {
         std::srand(std::time(nullptr));
     }
 
-    void LoadFont(const chip8::graphics::fonts::Font font) { memory.WriteBytes(font, 0x50); }
+    void LoadFont(const chip8::graphics::fonts::Font font) { memory.WriteBytes(font, graphics::fonts::FONT_ADDRESS_OFFSET); }
 
     void LoadRom(const std::vector<uint8_t>&& rom) {
         memory.WriteBytes(std::move(rom), chip8::system::Cpu::STARTING_PC);
@@ -502,6 +570,13 @@ class Emulator {
     void Run() {
 
         while (currentStatuts != Status::STOPPED) {
+
+            if (cpu.delayTimer != 0) {
+                cpu.delayTimer -= 1;
+            }
+            if (cpu.soundTimer != 0) {
+                cpu.soundTimer -= 1;
+            }
 
             screen.PollEvent([this](SDL_Event& event) {
                 if (event.type == SDL_QUIT) {
@@ -523,8 +598,9 @@ class Emulator {
                     if (key >= SDLK_a && key <= SDLK_f) {
                         this->pressedKey = (key - 'a') + 0xa;
                     }
-
+#ifdef DEBUG
                     std::cerr << "[info] :: pressed key number: " << static_cast<char>(key) << "\n";
+#endif
 
                     if (this->destinationKeyRegister.has_value()) {
                         auto x = this->destinationKeyRegister.value();
@@ -545,13 +621,25 @@ class Emulator {
             uint16_t instr = memory.Read16(cpu.PC);
             cpu.PC += 2;
 
+#if DEBUG
+            // std::fprintf(stdout, "[info] :: executing instruction '0x%x'\n", instr);
+#endif
+
             // Decode the instruction
             uint8_t opcode = FIRST_NIBBLE(instr);
             switch (opcode) {
                 case 0x0: {
                     // Clear Screen
-                    if (instr == 0x00E0) ClearScreen(instr);
-                    if (instr == 0x00EE) ReturnFromRoutine(instr);
+                    if (instr == 0x00E0) {
+                        ClearScreen(instr);
+                    }
+                    else if (instr == 0x00EE) {
+                        ReturnFromRoutine(instr);
+                    }
+                    else {
+                        std::cerr << "[error] illegal instruction...\n";
+                        std::exit(EXIT_FAILURE);
+                    }
                     break;
                 }
                 case 0x1: {
@@ -616,8 +704,7 @@ class Emulator {
                 }
                 default: {
                     std::cerr << "[error] :: Not implemented yet: 0x" << std::hex << instr << ".\n";
-                    //std::exit(-1);
-                    break;
+                    std::exit(-1);
                 }
             }
 
@@ -653,6 +740,7 @@ std::vector<uint8_t> ReadBinaryFile(const char* filename) {
 }
 
 int main(const int argc, const char** argv) {
+
     if (argc != 2) {
         std::cerr << "Usage: chip8 ./path/to/rom\n";
         return EXIT_FAILURE;
