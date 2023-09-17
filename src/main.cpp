@@ -116,7 +116,6 @@ class Screen {
 
    public:
     Screen(Config c, const char* title = "Chip8++") : config{c} {
-        std::fill_n(data.begin(), data.size(), 0);
         if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
             throw std::runtime_error{SDL_GetError()};
         }
@@ -158,10 +157,19 @@ class Screen {
     bool ReadPixel(std::size_t x, std::size_t y) { return data[DISPLAY_HEIGHT * x + y]; }
 
     void DrawAll(bool value) {
-        std::fill_n(data.begin(), data.size(), value);
+        for (std::size_t x = 0; x < DISPLAY_WIDTH; x++) {
+            for (std::size_t y = 0; y < DISPLAY_HEIGHT; y++) {
+                Draw(x, y, value);
+            }
+        }
     }
 
-    void Draw(std::size_t x, std::size_t y, bool value) { data[DISPLAY_HEIGHT * x + y] = value; }
+    void Draw(std::size_t x, std::size_t y, bool value) { 
+#ifdef DEBUG
+    std::fprintf(stdout, "[info] :: x=%ld,y=%ld on=%d\n", x, y, value);
+#endif
+        data[DISPLAY_HEIGHT * x + y] = value; 
+    }
 
     void Delay(uint32_t deltaTime = 0) { SDL_Delay(16 + deltaTime); }
 
@@ -213,19 +221,14 @@ struct Cpu {
     /// Decremented at rate of 60hz until it reaches 0.
     uint8_t soundTimer{0};
     /// Named V0, V1, V2, ..., VF (used as flag register).
-    std::array<uint8_t, NUMBER_OF_V_REGISTERS> V;
+    std::array<uint8_t, NUMBER_OF_V_REGISTERS> V{};
     /// The stack is an aray of 16bit 16 value (that means up to 16 subroutines nested).
-    std::array<uint16_t, STACK_SIZE> stack;
-
-    explicit Cpu() {
-        std::fill_n(V.begin(), V.size(), 0);
-        std::fill_n(stack.begin(), stack.size(), 0);
-    }
+    std::array<uint16_t, STACK_SIZE> stack{};
 };
 
 class Memory {
     static constexpr std::size_t MEMORY_SIZE = 1 << 12;  /// 4KiB
-    std::array<uint8_t, MEMORY_SIZE> data{0};
+    std::array<uint8_t, MEMORY_SIZE> data{};
 
    public:
     constexpr uint8_t Read8(const std::size_t address) const { return data[address]; }
@@ -261,6 +264,24 @@ class Memory {
     }
 };
 
+class Keyboard {
+    static constexpr std::size_t KEYBOARD_SIZE = 16;
+    std::array<bool, KEYBOARD_SIZE> keyboard{};
+public:
+    void PressKey(std::size_t key) {
+        assert(0 <= key && key < KEYBOARD_SIZE);
+        keyboard[key] = true;
+    }
+    void ReleaseKey(std::size_t key) {
+        assert(0 <= key && key < KEYBOARD_SIZE);
+        keyboard[key] = false;
+    }
+    bool isKeyPressed(std::size_t key) {
+        assert(0 <= key && key < KEYBOARD_SIZE);
+        return keyboard[key];
+    }
+};
+
 }  // namespace system
 
 class Emulator {
@@ -268,14 +289,15 @@ class Emulator {
 
     Config config{};
 
-    uint8_t pressedKey{0};
+    bool shouldRedraw {false};
     std::optional<uint8_t> destinationKeyRegister {std::nullopt}; // The KeyPad is hexdecimal 0-F
 
     chip8::system::Cpu cpu;
     chip8::system::Memory memory;
+    chip8::system::Keyboard keyboard;
     chip8::display::Screen screen{config};
 
-    Status currentStatuts{Status::PAUSED};
+    Status currentStatuts{Status::RUNNING};
 
     void Jump(uint16_t instr, bool hasOffset = false) {
         auto offset = (hasOffset) ? cpu.V[0] : 0;
@@ -286,10 +308,11 @@ class Emulator {
     }
 
     void LoadIntoV(uint16_t instr) {
-        auto reg = SECOND_NIBBLE(instr);
-        assert(0 <= reg && reg < 0xf0);
-        auto value = LSB(instr);
-        cpu.V[reg] = value;
+        // 6xkk - LD Vx, byte
+        auto x = SECOND_NIBBLE(instr);
+        assert(0 <= x && x < 0xf0);
+        auto byte = LSB(instr);
+        cpu.V[x] = byte;
     }
 
     void SetIndexRegister(uint16_t instr) {
@@ -298,6 +321,7 @@ class Emulator {
 
     void ClearScreen(uint16_t) {
         screen.DrawAll(false);
+        shouldRedraw = true;
 #ifdef DEBUG
         std::fprintf(stdout, "[info] :: cleaning screen...\n");
 #endif
@@ -421,7 +445,6 @@ class Emulator {
 
     void SkipEqual(uint16_t instr, bool compareRegister) {
         // 4xkk/5xy0
-        // Skip next instruction if Vx != kk.
         auto reg = SECOND_NIBBLE(instr);
         auto value = (compareRegister) ? (cpu.V[THIRD_NIBBLE(instr)]) : LSB(instr);
         if (cpu.V[reg] == value) {
@@ -430,11 +453,11 @@ class Emulator {
     }
 
     void SkipNotEqual(uint16_t instr, bool compareRegister) {
-        // 4xkk
-        // Skip next instruction if Vx != kk.
-        auto reg = SECOND_NIBBLE(instr);
+        // 4xkk - SNE Vx, byte  (compareRegister=false)
+        // 9xy0 - SNE Vx, Vy    (compareRegister=true)
+        auto x = SECOND_NIBBLE(instr);
         auto value = (compareRegister) ? (cpu.V[THIRD_NIBBLE(instr)]) : LSB(instr);
-        if (cpu.V[reg] != value) {
+        if (cpu.V[x] != value) {
             cpu.PC += 2;
         }
     }
@@ -463,19 +486,22 @@ class Emulator {
 
             if (++y0 >= chip8::display::DISPLAY_HEIGHT) break;
         }
+        shouldRedraw = true;
     }
 
     void Random(uint16_t instr) {
+        auto x = SECOND_NIBBLE(instr);
         auto lsb = LSB(instr);
         auto rnd = std::rand() % 0x100;
-        cpu.V[SECOND_NIBBLE(instr)] = lsb & rnd;
+        cpu.V[x] = lsb & rnd;
     }
 
     void FDispatcher(uint16_t instr) {
         switch (LSB(instr)) {
             case 0x07: {
                 // Set Vx = delay timer value.
-                cpu.V[SECOND_NIBBLE(instr)] = cpu.delayTimer;
+                auto x = SECOND_NIBBLE(instr);
+                cpu.V[x] = cpu.delayTimer;
                 break;
             }
             case 0x0A: {
@@ -537,18 +563,19 @@ class Emulator {
     }
 
     void SkipIfKey(uint16_t instr) {
-        
-        auto subop = LSB(instr);
+
+        // Ex9E - SKP Vx:  Skip next instruction if key with the value of Vx is pressed.
+        // ExA1 - SKNP Vx: Skip next instruction if key with the value of Vx is not pressed.
+
+        uint8_t subop = LSB(instr);
         bool shouldSkip = false;
 
-        uint8_t regValue = this->cpu.V[SECOND_NIBBLE(instr)];
+        uint8_t vx = this->cpu.V[SECOND_NIBBLE(instr)];
 
         if (subop == 0x9E) {
-            // If equal            
-            shouldSkip = pressedKey == regValue;
+            shouldSkip = keyboard.isKeyPressed(vx);
         } else if (subop == 0xA1) {
-            // If not equal
-            shouldSkip = pressedKey != regValue;
+            shouldSkip = !keyboard.isKeyPressed(vx);
         }
 
         if (shouldSkip) {
@@ -571,19 +598,20 @@ class Emulator {
 
         while (currentStatuts != Status::STOPPED) {
 
-            if (cpu.delayTimer != 0) {
-                cpu.delayTimer -= 1;
+            if (cpu.delayTimer > 0) {
+                cpu.delayTimer--;
             }
-            if (cpu.soundTimer != 0) {
-                cpu.soundTimer -= 1;
+            if (cpu.soundTimer > 0) {
+                cpu.soundTimer--;
             }
 
-            screen.PollEvent([this](SDL_Event& event) {
+            screen.PollEvent([this](const SDL_Event& event) {
                 if (event.type == SDL_QUIT) {
                     std::exit(EXIT_FAILURE);
                 }
                 if (event.type == SDL_KEYDOWN) {
 
+                    uint8_t pressedKey = 0;
                     auto key = event.key.keysym.sym;
 
                     // If Q or Escape is pressed quit the emulator.
@@ -593,10 +621,18 @@ class Emulator {
                     
                     // 0 to 9
                     if (key >= SDLK_0 && key <= SDLK_9) {
-                        this->pressedKey = (key - '0');
+                        pressedKey = (key - '0');
+                        keyboard.PressKey(pressedKey);
+#ifdef DEBUG
+                        std::fprintf(stdout, "[info] :: index=%d\n", index);
+#endif
                     }
                     if (key >= SDLK_a && key <= SDLK_f) {
-                        this->pressedKey = (key - 'a') + 0xa;
+                        pressedKey = (key - 'a') + 0xa;
+                        keyboard.PressKey(pressedKey);
+#ifdef DEBUG
+                        std::fprintf(stdout, "[info] :: index=%d\n", index);
+#endif
                     }
 #ifdef DEBUG
                     std::cerr << "[info] :: pressed key number: " << static_cast<char>(key) << "\n";
@@ -605,15 +641,19 @@ class Emulator {
                     if (this->destinationKeyRegister.has_value()) {
                         auto x = this->destinationKeyRegister.value();
                         assert(0 <= x && x <= 0xf);
+                        assert(0 <= pressedKey && pressedKey <= 0xf);
                         this->cpu.V[x] = pressedKey;
                         this->destinationKeyRegister = std::nullopt;
-                          // Switch the current status back to running
                         this->currentStatuts = Status::RUNNING;
                     }
                 }
             });
 
-            if (currentStatuts == Status::WAITING_FOR_KEY) continue;
+            if (currentStatuts != Status::RUNNING) {
+                // The timer needs to be synchronized
+                screen.Delay();
+                continue;
+            }
 
             auto start = std::chrono::steady_clock::now();
 
@@ -622,7 +662,7 @@ class Emulator {
             cpu.PC += 2;
 
 #if DEBUG
-            // std::fprintf(stdout, "[info] :: executing instruction '0x%x'\n", instr);
+            std::fprintf(stdout, "[info] :: executing instruction '0x%x'\n", instr);
 #endif
 
             // Decode the instruction
@@ -712,7 +752,10 @@ class Emulator {
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
 
             screen.Delay();
-            screen.Update();
+            if (shouldRedraw) {
+                screen.Update();
+                shouldRedraw = false;
+            }
         }
     }
 };

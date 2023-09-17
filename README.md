@@ -5,6 +5,18 @@ and draw sprites on the screen.
 
 <img width="1392" alt="chip8 emulator" src="https://github.com/gabryon99/chip8/assets/14114916/25f3920e-b029-48ab-9e37-1a1b48418181">
 
+### Test Roms
+
+- [x] IBM Logo
+- [x] BPM Viewer
+- [x] Chip8 Logo
+- [ ] KeyPad Test: it seems there is a problem when key handling...
+- [ ] Zero Demo
+
+#### Bugs
+
+Roms making use of changing sprite leave a ghost effect.
+
 ### Next Features
 
 - [ ] Creating a debugger with breakpoints.
