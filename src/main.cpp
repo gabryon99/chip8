@@ -154,7 +154,14 @@ class Screen {
         }
     }
 
-    bool ReadPixel(std::size_t x, std::size_t y) { return data[DISPLAY_HEIGHT * x + y]; }
+    inline bool ReadPixel(std::size_t x, std::size_t y) { 
+#ifdef DEBUG
+    std::fprintf(stdout, "[info] :: reading x=%ld,y=%ld\n", x, y);
+#endif
+        assert(0 <= x && x < DISPLAY_WIDTH);
+        assert(0 <= y && y < DISPLAY_HEIGHT);
+        return data[DISPLAY_WIDTH * y + x]; 
+    }
 
     void DrawAll(bool value) {
         for (std::size_t x = 0; x < DISPLAY_WIDTH; x++) {
@@ -166,9 +173,11 @@ class Screen {
 
     void Draw(std::size_t x, std::size_t y, bool value) { 
 #ifdef DEBUG
-    std::fprintf(stdout, "[info] :: x=%ld,y=%ld on=%d\n", x, y, value);
+    std::fprintf(stdout, "[info] :: drawing at x=%ld,y=%ld on=%d\n", x, y, value);
 #endif
-        data[DISPLAY_HEIGHT * x + y] = value; 
+        assert(0 <= x && x < DISPLAY_WIDTH);
+        assert(0 <= y && y < DISPLAY_HEIGHT);
+        data[DISPLAY_WIDTH * y + x] = value; 
     }
 
     void Delay(uint32_t deltaTime = 0) { SDL_Delay(16 + deltaTime); }
@@ -475,12 +484,18 @@ class Emulator {
             uint8_t x0 = x;
 
             for (int8_t j = 7; j >= 0; j--) {
+            
                 bool pixel = screen.ReadPixel(x0, y0);
                 uint8_t spriteBit = (spriteRow & (1 << j));
+                
                 if (spriteBit && pixel) {
+                    screen.Draw(x0, y0, 0);
                     cpu.V[CARRY_FLAG] = 0x1;
                 }
-                screen.Draw(x0, y0, pixel ^ spriteBit);
+                else {
+                    screen.Draw(x0, y0, pixel ^ spriteBit);
+                }
+
                 if (++x0 >= chip8::display::DISPLAY_WIDTH) break;
             }
 
@@ -609,6 +624,26 @@ class Emulator {
                 if (event.type == SDL_QUIT) {
                     std::exit(EXIT_FAILURE);
                 }
+                if (event.type == SDL_KEYUP) {
+                    uint8_t releasedKey = 0;
+                    auto key = event.key.keysym.sym;
+                    if (key >= SDLK_0 && key <= SDLK_9) {
+                        releasedKey = (key - '0');
+                        assert(0 <= releasedKey && releasedKey <= 0xf);
+                        keyboard.ReleaseKey(releasedKey);
+#ifdef DEBUG
+                        std::fprintf(stdout, "[info] :: key released index=%d\n", releasedKey);
+#endif
+                    }
+                    if (key >= SDLK_a && key <= SDLK_f) {
+                        releasedKey = (key - 'a') + 0xa;
+                        assert(0 <= releasedKey && releasedKey <= 0xf);
+                        keyboard.ReleaseKey(releasedKey);
+#ifdef DEBUG
+                        std::fprintf(stdout, "[info] :: key released index=%d\n", releasedKey);
+#endif
+                    }
+                }
                 if (event.type == SDL_KEYDOWN) {
 
                     uint8_t pressedKey = 0;
@@ -624,14 +659,14 @@ class Emulator {
                         pressedKey = (key - '0');
                         keyboard.PressKey(pressedKey);
 #ifdef DEBUG
-                        std::fprintf(stdout, "[info] :: index=%d\n", index);
+                        std::fprintf(stdout, "[info] :: key pressed index=%d\n", pressedKey);
 #endif
                     }
                     if (key >= SDLK_a && key <= SDLK_f) {
                         pressedKey = (key - 'a') + 0xa;
                         keyboard.PressKey(pressedKey);
 #ifdef DEBUG
-                        std::fprintf(stdout, "[info] :: index=%d\n", index);
+                        std::fprintf(stdout, "[info] :: key pressed index=%d\n", pressedKey);
 #endif
                     }
 #ifdef DEBUG
