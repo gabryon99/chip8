@@ -1,4 +1,6 @@
 #include <SDL2/SDL.h>
+#include <_types/_uint16_t.h>
+#include <_types/_uint8_t.h>
 
 #include <algorithm>
 #include <array>
@@ -261,6 +263,9 @@ class Emulator {
 
     Config config{};
 
+    uint8_t pressedKey{0};
+    std::optional<uint8_t> destinationKeyRegister {std::nullopt}; // The KeyPad is hexdecimal 0-F
+
     chip8::system::Cpu cpu;
     chip8::system::Memory memory;
     chip8::display::Screen screen{config};
@@ -329,32 +334,32 @@ class Emulator {
             }
             case 0x4: {
                 std::cerr << "[error] :: unimplemented operator\n";
-                std::exit(-1);
+                //std::exit(-1);
                 break;
             }
             case 0x5: {
                 std::cerr << "[error] :: unimplemented operator\n";
-                std::exit(-1);
+                //std::exit(-1);
                 break;
             }
             case 0x6: {
                 std::cerr << "[error] :: unimplemented operator\n";
-                std::exit(-1);
+                //std::exit(-1);
                 break;
             }
             case 0x7: {
                 std::cerr << "[error] :: unimplemented operator\n";
-                std::exit(-1);
+                //std::exit(-1);
                 break;
             }
             case 0xE: {
                 std::cerr << "[error] :: unimplemented operator\n";
-                std::exit(-1);
+                //std::exit(-1);
                 break;
             }
             default: {
                 std::cerr << "[error] :: unimplemented operator\n";
-                std::exit(-1);
+                //std::exit(-1);
                 break;
             }
         }
@@ -420,6 +425,12 @@ class Emulator {
 
     void FDispatcher(uint16_t instr) {
         switch (LSB(instr)) {
+            case 0x0A: {
+                // FX0A
+                destinationKeyRegister = SECOND_NIBBLE(instr);
+                currentStatuts = Status::WAITING_FOR_KEY;
+                break;
+            }
             case 0x15: {
                 // Fx15 - Set delay timer
                 cpu.delayTimer = cpu.V[SECOND_NIBBLE(instr)];
@@ -457,6 +468,26 @@ class Emulator {
         }
     }
 
+    void SkipIfKey(uint16_t instr) {
+        
+        auto subop = LSB(instr);
+        bool shouldSkip = false;
+
+        uint8_t regValue = this->cpu.V[SECOND_NIBBLE(instr)];
+
+        if (subop == 0x9E) {
+            // If equal            
+            shouldSkip = pressedKey == regValue;
+        } else if (subop == 0xA1) {
+            // If not equal
+            shouldSkip = pressedKey != regValue;
+        }
+
+        if (shouldSkip) {
+            cpu.PC += 2;
+        }
+    }
+
    public:
     explicit Emulator() {
         std::srand(std::time(nullptr));
@@ -469,17 +500,44 @@ class Emulator {
     }
 
     void Run() {
+
         while (currentStatuts != Status::STOPPED) {
-            screen.PollEvent([](SDL_Event& event) {
+
+            screen.PollEvent([this](SDL_Event& event) {
                 if (event.type == SDL_QUIT) {
                     std::exit(EXIT_FAILURE);
                 }
                 if (event.type == SDL_KEYDOWN) {
-                    if (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
+
+                    auto key = event.key.keysym.sym;
+
+                    // If Q or Escape is pressed quit the emulator.
+                    if (key == SDLK_ESCAPE || key == SDLK_q) {
                         std::exit(EXIT_FAILURE);
+                    }
+                    
+                    // 0 to 9
+                    if (key >= SDLK_0 && key <= SDLK_9) {
+                        this->pressedKey = (key - '0');
+                    }
+                    if (key >= SDLK_a && key <= SDLK_f) {
+                        this->pressedKey = (key - 'a') + 0xa;
+                    }
+
+                    std::cerr << "[info] :: pressed key number: " << static_cast<char>(key) << "\n";
+
+                    if (this->destinationKeyRegister.has_value()) {
+                        auto x = this->destinationKeyRegister.value();
+                        assert(0 <= x && x <= 0xf);
+                        this->cpu.V[x] = pressedKey;
+                        this->destinationKeyRegister = std::nullopt;
+                          // Switch the current status back to running
+                        this->currentStatuts = Status::RUNNING;
                     }
                 }
             });
+
+            if (currentStatuts == Status::WAITING_FOR_KEY) continue;
 
             auto start = std::chrono::steady_clock::now();
 
@@ -546,6 +604,14 @@ class Emulator {
                 }
                 case 0xD: {
                     DrawPixels(instr);
+                    break;
+                }
+                case 0xE: { 
+                    SkipIfKey(instr);
+                    break;
+                }
+                case 0xF: {
+                    FDispatcher(instr);
                     break;
                 }
                 default: {
