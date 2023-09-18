@@ -15,6 +15,7 @@ and draw sprites on the screen, and play games!
 
 ### Next Features
 
+- [ ] Game Tuner: since CHIP8 games do not have any header file, maybe we can use a _checksum_.
 - [ ] Creating a debugger with breakpoints.
 - [ ] Showing CPU status in a separate window.
 - [x] Implementing missing arithmetic instructions with carry.

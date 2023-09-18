@@ -1,7 +1,4 @@
 #include <SDL2/SDL.h>
-#include <_types/_uint16_t.h>
-#include <_types/_uint32_t.h>
-#include <_types/_uint8_t.h>
 
 #include <algorithm>
 #include <array>
@@ -10,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -38,14 +36,6 @@
 #define MSB(data) ((data >> 0x08) & 0xff)
 
 #define TWELVE(data) (data & 0xfff)
-
-namespace utility {
-template <typename T>
-void PrintHex(T value, uint8_t trailing = 4) {
-    std::cerr << "0x" << std::setfill('0') << std::setw(trailing) << std::right << std::hex << value
-              << std::resetiosflags(std::ios::showbase);
-}
-}  // namespace utility
 
 namespace chip8 {
 
@@ -83,7 +73,7 @@ struct Color {
     const uint8_t b;
     const uint8_t a;
 
-    constexpr Color(uint8_t r, uint8_t g, uint8_t b, uint8_t a) : r{r}, g{g}, b{b}, a{a} {}
+    constexpr Color(const uint8_t r, const uint8_t g, const uint8_t b, const uint8_t a) : r{r}, g{g}, b{b}, a{a} {}
 };
 
 constexpr Color BLACK = {0x00, 0x00, 0x00, 0xff};
@@ -97,7 +87,7 @@ constexpr Color BLUE = {0x00, 0x00, 0xff, 0xff};
 
 struct Config {
     static constexpr uint32_t DEFAULT_SCALE_FACTOR = 20;
-    static constexpr uint32_t DEFAULT_CPU_SPEED = 500;
+    static constexpr uint32_t DEFAULT_CPU_SPEED = 1000;
 
     uint32_t scaleFactor{DEFAULT_SCALE_FACTOR};
     /// How many instructions emulate in 1 second
@@ -157,14 +147,14 @@ class Screen {
     }
 
     template <typename Callback>
-    void PollEvent(Callback callback) {
+    void PollEvent(const Callback callback) {
         SDL_Event e{};
         while (SDL_PollEvent(&e)) {
             callback(e);
         }
     }
 
-    inline bool ReadPixel(std::size_t x, std::size_t y) { 
+    inline bool ReadPixel(const std::size_t x, const std::size_t y) { 
 #ifdef DEBUG
     std::fprintf(stdout, "[info] :: reading x=%ld,y=%ld\n", x, y);
 #endif
@@ -173,15 +163,11 @@ class Screen {
         return data[DISPLAY_WIDTH * y + x]; 
     }
 
-    void DrawAll(bool value) {
-        for (std::size_t x = 0; x < DISPLAY_WIDTH; x++) {
-            for (std::size_t y = 0; y < DISPLAY_HEIGHT; y++) {
-                Draw(x, y, value);
-            }
-        }
+    void DrawAll(const bool value) {
+        std::fill_n(data.begin(), data.size(), value);
     }
 
-    void Draw(std::size_t x, std::size_t y, bool value) { 
+    void Draw(const std::size_t x, const std::size_t y, const bool value) { 
 #ifdef DEBUG
     std::fprintf(stdout, "[info] :: drawing at x=%ld,y=%ld on=%d\n", x, y, value);
 #endif
@@ -200,10 +186,11 @@ class Screen {
     }
 
     void Update() {
+
         CleanScreen();
 
         // Draw pixels on screen
-        auto [r, g, b, a] = config.fgColor;
+        const auto [r, g, b, a] = config.fgColor;
 
         for (std::size_t x = 0; x < DISPLAY_WIDTH; x++) {
             for (std::size_t y = 0; y < DISPLAY_HEIGHT; y++) {
@@ -315,7 +302,6 @@ class Emulator {
 
     Config config{};
 
-    bool shouldRedraw {false};
     std::optional<uint8_t> destinationKeyRegister {std::nullopt}; // The KeyPad is hexdecimal 0-F
 
     chip8::system::Cpu cpu;
@@ -328,17 +314,16 @@ class Emulator {
     void Jump(uint16_t instr, bool hasOffset = false) {
         auto offset = (hasOffset) ? cpu.V[0] : 0;
         cpu.PC = TWELVE(instr) + offset;
-#ifdef DEBUG
+        #ifdef DEBUG
         std::fprintf(stdout, "[info] :: jumping to address '0x%x'\n", TWELVE(instr) + offset);
-#endif
+        #endif
     }
 
     void LoadIntoV(uint16_t instr) {
         // 6xkk - LD Vx, byte
         auto x = SECOND_NIBBLE(instr);
         assert(0 <= x && x < 0xf0);
-        auto byte = LSB(instr);
-        cpu.V[x] = byte;
+        cpu.V[x] = LSB(instr);
     }
 
     void SetIndexRegister(uint16_t instr) {
@@ -347,32 +332,31 @@ class Emulator {
 
     void ClearScreen(uint16_t) {
         screen.DrawAll(false);
-        shouldRedraw = true;
-#ifdef DEBUG
+        #ifdef DEBUG
         std::fprintf(stdout, "[info] :: cleaning screen...\n");
-#endif
+        #endif
     }
 
-    void Call(uint16_t instr) {
+    void Call(const uint16_t instr) {
         auto address = TWELVE(instr);
         cpu.SP++;
         cpu.stack[cpu.SP] = cpu.PC;
         cpu.PC = address;
-#ifdef DEBUG
+        #ifdef DEBUG
         std::cerr << "[info] :: calling routine at: 0x" << std::hex << address << std::endl;
-#endif
+        #endif
     }
 
     void ReturnFromRoutine(uint16_t) {
         // Return from Subroutine
         cpu.PC = cpu.stack[cpu.SP];
-#ifdef DEBUG
+        #ifdef DEBUG
         std::fprintf(stdout, "[info] :: returning to '0x%lx'\n", cpu.PC);
-#endif
+        #endif
         cpu.SP--;
     }
 
-    void Assignment8(uint16_t instr) {
+    void Assignment8(const uint16_t instr) {
         // 1->OR, 2->AND, 3->XOR
         // 8XY1, 8XY2, 8XY3
         uint8_t x = SECOND_NIBBLE(instr);
@@ -518,7 +502,6 @@ class Emulator {
 
             if (++y0 >= chip8::display::DISPLAY_HEIGHT) break;
         }
-        shouldRedraw = true;
     }
 
     void Random(const uint16_t instr) {
@@ -767,7 +750,7 @@ class Emulator {
             }
             default: {
                 std::cerr << "[error] :: Not implemented yet: 0x" << std::hex << instr << ".\n";
-                std::exit(-1);
+                std::exit(EXIT_FAILURE);
             }
         }
     }
@@ -786,6 +769,7 @@ class Emulator {
     void Run() {
 
         uint32_t instructionPerSecond = config.cpuSpeed / 60;
+        std::fprintf(stdout, "[info] :: instr per second: %u\n", instructionPerSecond);
 
         while (currentStatuts != Status::STOPPED) {
 
@@ -810,11 +794,7 @@ class Emulator {
             if (cpu.delayTimer > 0) { cpu.delayTimer--; }
             if (cpu.soundTimer > 0) { cpu.soundTimer--; }
             screen.Delay(elapsed);
-
-            if (shouldRedraw) {
-                screen.Update();
-                shouldRedraw = false;
-            }
+            screen.Update();
         }
     }
 };
