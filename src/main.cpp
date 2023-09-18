@@ -506,9 +506,7 @@ class Emulator {
 
     void Random(uint16_t instr) {
         auto x = SECOND_NIBBLE(instr);
-        auto lsb = LSB(instr);
-        auto rnd = std::rand() % 0x100;
-        cpu.V[x] = lsb & rnd;
+        cpu.V[x] = LSB(instr) & (std::rand() % 0x100);
     }
 
     void FDispatcher(uint16_t instr) {
@@ -551,21 +549,23 @@ class Emulator {
                 // Fx33 - LD B, Vx
                 // Store BCD representation of Vx in memory locations I, I+1, and I+2.
                 uint8_t vx = cpu.V[SECOND_NIBBLE(instr)];
-                memory.Write8(cpu.I, static_cast<uint8_t>(static_cast<uint16_t>((vx % 1000) / 100)));
-                memory.Write8(cpu.I + 1, (vx % 100) / 10);
                 memory.Write8(cpu.I + 2, vx % 10);
+                vx /= 10;
+                memory.Write8(cpu.I + 1, vx % 10);
+                vx /= 10;
+                memory.Write8(cpu.I, vx);
                 break;
             }
             case 0x55: {
                 // Fx55 - LD [I], Vx
-                for (std::size_t i = 0; i < SECOND_NIBBLE(instr); i++) {
+                for (std::size_t i = 0; i <= SECOND_NIBBLE(instr); i++) {
                     memory.Write8(i + cpu.I, cpu.V[i]);
                 }
                 break;
             }
             case 0x65: {
                 // Fx65 - LD Vx, [I]
-                for (std::size_t i = 0; i < SECOND_NIBBLE(instr); i++) {
+                for (std::size_t i = 0; i <= SECOND_NIBBLE(instr); i++) {
                     cpu.V[i] = memory.Read8(i + cpu.I);
                 }
                 break;

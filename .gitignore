@@ -30,3 +30,8 @@
 *.exe
 *.out
 *.app
+
+chip8
+chip8*
+
+bin/
