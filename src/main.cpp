@@ -1,5 +1,6 @@
 #include <SDL2/SDL.h>
 #include <_types/_uint16_t.h>
+#include <_types/_uint32_t.h>
 #include <_types/_uint8_t.h>
 
 #include <algorithm>
@@ -96,10 +97,16 @@ constexpr Color BLUE = {0x00, 0x00, 0xff, 0xff};
 
 struct Config {
     static constexpr uint32_t DEFAULT_SCALE_FACTOR = 20;
+    static constexpr uint32_t DEFAULT_CPU_SPEED = 500;
 
     uint32_t scaleFactor{DEFAULT_SCALE_FACTOR};
+    /// How many instructions emulate in 1 second
+    uint32_t cpuSpeed{DEFAULT_CPU_SPEED}; 
+    /// Apply a scan line effect into emulator's screen.
     bool useScanline{true};
+    /// Color of the scan line effect
     chip8::graphics::colors::Color scanline{0x0f, 0x0f, 0x0f, 0xff};
+
     chip8::graphics::colors::Color fgColor = chip8::graphics::colors::GREEN;
     chip8::graphics::colors::Color bgColor = chip8::graphics::colors::BLACK;
 };
@@ -107,11 +114,14 @@ struct Config {
 namespace display {
 constexpr std::uint32_t DISPLAY_WIDTH = 64;
 constexpr std::uint32_t DISPLAY_HEIGHT = 32;
+constexpr double MS_REFRESH_RATE = 16.67f;
 
 class Screen {
+    
     std::array<bool, DISPLAY_WIDTH * DISPLAY_HEIGHT> data{};
     SDL_Window* windowHandle{nullptr};
     SDL_Renderer* renderer{nullptr};
+
     Config config;
 
    public:
@@ -180,7 +190,14 @@ class Screen {
         data[DISPLAY_WIDTH * y + x] = value; 
     }
 
-    void Delay(uint32_t deltaTime = 0) { SDL_Delay(16 + deltaTime); }
+    void Delay(const double elapsed = 0) {  
+        if (MS_REFRESH_RATE > elapsed) {
+            // Elapsed took less time than expected, so we dealy for the difference
+            SDL_Delay(MS_REFRESH_RATE - elapsed);
+        } else {
+            // We do need to wait!
+        }
+    }
 
     void Update() {
         CleanScreen();
@@ -446,13 +463,13 @@ class Emulator {
         }
     }
 
-    void Add(uint16_t instr) {
+    void Add(const uint16_t instr) {
         auto reg = SECOND_NIBBLE(instr);
         assert(0x0 <= reg && reg <= 0xf);
         cpu.V[reg] += LSB(instr);
     }
 
-    void SkipEqual(uint16_t instr, bool compareRegister) {
+    void SkipEqual(const uint16_t instr, const bool compareRegister) {
         // 4xkk/5xy0
         auto reg = SECOND_NIBBLE(instr);
         auto value = (compareRegister) ? (cpu.V[THIRD_NIBBLE(instr)]) : LSB(instr);
@@ -461,7 +478,7 @@ class Emulator {
         }
     }
 
-    void SkipNotEqual(uint16_t instr, bool compareRegister) {
+    void SkipNotEqual(const uint16_t instr, const bool compareRegister) {
         // 4xkk - SNE Vx, byte  (compareRegister=false)
         // 9xy0 - SNE Vx, Vy    (compareRegister=true)
         auto x = SECOND_NIBBLE(instr);
@@ -471,7 +488,7 @@ class Emulator {
         }
     }
 
-    void DrawPixels(uint16_t instr) {
+    void DrawPixels(const uint16_t instr) {
         const uint8_t x = cpu.V[SECOND_NIBBLE(instr)] % (chip8::display::DISPLAY_WIDTH);
         const uint8_t y = cpu.V[THIRD_NIBBLE(instr)] % (chip8::display::DISPLAY_HEIGHT);
         const uint8_t n = FOURTH_NIBBLE(instr);
@@ -504,12 +521,12 @@ class Emulator {
         shouldRedraw = true;
     }
 
-    void Random(uint16_t instr) {
+    void Random(const uint16_t instr) {
         auto x = SECOND_NIBBLE(instr);
         cpu.V[x] = LSB(instr) & (std::rand() % 0x100);
     }
 
-    void FDispatcher(uint16_t instr) {
+    void FDispatcher(const uint16_t instr) {
         switch (LSB(instr)) {
             case 0x07: {
                 // Set Vx = delay timer value.
@@ -577,7 +594,7 @@ class Emulator {
         }
     }
 
-    void SkipIfKey(uint16_t instr) {
+    void SkipIfKey(const uint16_t instr) {
 
         // Ex9E - SKP Vx:  Skip next instruction if key with the value of Vx is pressed.
         // ExA1 - SKNP Vx: Skip next instruction if key with the value of Vx is not pressed.
@@ -598,6 +615,163 @@ class Emulator {
         }
     }
 
+    void HandleInput() {
+        screen.PollEvent([this](const SDL_Event& event) {
+            if (event.type == SDL_QUIT) {
+                std::exit(EXIT_FAILURE);
+            }
+            if (event.type == SDL_KEYUP) {
+                uint8_t releasedKey = 0;
+                auto key = event.key.keysym.sym;
+                if (key >= SDLK_0 && key <= SDLK_9) {
+                    releasedKey = (key - '0');
+                    assert(0 <= releasedKey && releasedKey <= 0xf);
+                    keyboard.ReleaseKey(releasedKey);
+                    #ifdef DEBUG
+                    std::fprintf(stdout, "[info] :: key released index=%d\n", releasedKey);
+                    #endif
+                }
+                if (key >= SDLK_a && key <= SDLK_f) {
+                    releasedKey = (key - 'a') + 0xa;
+                    assert(0 <= releasedKey && releasedKey <= 0xf);
+                    keyboard.ReleaseKey(releasedKey);
+                    #ifdef DEBUG
+                    std::fprintf(stdout, "[info] :: key released index=%d\n", releasedKey);
+                    #endif
+                }
+            }
+            if (event.type == SDL_KEYDOWN) {
+
+                uint8_t pressedKey = 0;
+                auto key = event.key.keysym.sym;
+
+                // If Q or Escape is pressed quit the emulator.
+                if (key == SDLK_ESCAPE || key == SDLK_q) {
+                    std::exit(EXIT_FAILURE);
+                }
+                
+                // 0 to 9
+                if (key >= SDLK_0 && key <= SDLK_9) {
+                    pressedKey = (key - '0');
+                    keyboard.PressKey(pressedKey);
+                    #ifdef DEBUG
+                    std::fprintf(stdout, "[info] :: key pressed index=%d\n", pressedKey);
+                    #endif
+                }
+                if (key >= SDLK_a && key <= SDLK_f) {
+                    pressedKey = (key - 'a') + 0xa;
+                    keyboard.PressKey(pressedKey);
+                    #ifdef DEBUG
+                    std::fprintf(stdout, "[info] :: key pressed index=%d\n", pressedKey);
+                    #endif
+                }
+                #ifdef DEBUG
+                std::cerr << "[info] :: pressed key number: " << static_cast<char>(key) << "\n";
+                #endif
+
+                if (this->destinationKeyRegister.has_value()) {
+                    auto x = this->destinationKeyRegister.value();
+                    assert(0 <= x && x <= 0xf);
+                    assert(0 <= pressedKey && pressedKey <= 0xf);
+                    this->cpu.V[x] = pressedKey;
+                    this->destinationKeyRegister = std::nullopt;
+                    this->currentStatuts = Status::RUNNING;
+                }
+            }
+        });
+    }
+
+    void ExecuteNextInstruction() {
+        // Fecth the next instruction. The instruction has 4 nibbles.
+        uint16_t instr = memory.Read16(cpu.PC);
+        cpu.PC += 2;
+        #if DEBUG
+        std::fprintf(stdout, "[info] :: executing instruction '0x%x'\n", instr);
+        #endif
+        // Decode the instruction
+        uint8_t opcode = FIRST_NIBBLE(instr);
+        switch (opcode) {
+            case 0x0: {
+                // Clear Screen
+                if (instr == 0x00E0) {
+                    ClearScreen(instr);
+                }
+                else if (instr == 0x00EE) {
+                    ReturnFromRoutine(instr);
+                }
+                else {
+                    std::cerr << "[error] illegal instruction...\n";
+                    std::exit(EXIT_FAILURE);
+                }
+                break;
+            }
+            case 0x1: {
+                Jump(instr);
+                break;
+            }
+            case 0x2: {
+                Call(instr);
+                break;
+            }
+            case 0x3: {
+                SkipEqual(instr, false);
+                break;
+            }
+            case 0x4: {
+                SkipNotEqual(instr, false);
+                break;
+            }
+            case 0x5: {
+                SkipEqual(instr, true);
+                break;
+            }
+            case 0x6: {
+                LoadIntoV(instr);
+                break;
+            }
+            case 0x7: {
+                Add(instr);
+                break;
+            }
+            case 0x8: {
+                Assignment8(instr);
+                break;
+            }
+            case 0x9: {
+                SkipNotEqual(instr, true);
+                break;
+            }
+            case 0xA: {
+                SetIndexRegister(instr);
+                break;
+            }
+            case 0xB: {
+                Jump(instr, true);
+                break;
+            }
+            case 0xC: {
+                Random(instr);
+                break;
+            }
+            case 0xD: {
+                DrawPixels(instr);
+                break;
+            }
+            case 0xE: { 
+                SkipIfKey(instr);
+                break;
+            }
+            case 0xF: {
+                FDispatcher(instr);
+                break;
+            }
+            default: {
+                std::cerr << "[error] :: Not implemented yet: 0x" << std::hex << instr << ".\n";
+                std::exit(-1);
+            }
+        }
+    }
+
    public:
     explicit Emulator() {
         std::srand(std::time(nullptr));
@@ -611,182 +785,32 @@ class Emulator {
 
     void Run() {
 
+        uint32_t instructionPerSecond = config.cpuSpeed / 60;
+
         while (currentStatuts != Status::STOPPED) {
 
-            if (cpu.delayTimer > 0) {
-                cpu.delayTimer--;
-            }
-            if (cpu.soundTimer > 0) {
-                cpu.soundTimer--;
-            }
+            HandleInput();
 
-            screen.PollEvent([this](const SDL_Event& event) {
-                if (event.type == SDL_QUIT) {
-                    std::exit(EXIT_FAILURE);
-                }
-                if (event.type == SDL_KEYUP) {
-                    uint8_t releasedKey = 0;
-                    auto key = event.key.keysym.sym;
-                    if (key >= SDLK_0 && key <= SDLK_9) {
-                        releasedKey = (key - '0');
-                        assert(0 <= releasedKey && releasedKey <= 0xf);
-                        keyboard.ReleaseKey(releasedKey);
-#ifdef DEBUG
-                        std::fprintf(stdout, "[info] :: key released index=%d\n", releasedKey);
-#endif
-                    }
-                    if (key >= SDLK_a && key <= SDLK_f) {
-                        releasedKey = (key - 'a') + 0xa;
-                        assert(0 <= releasedKey && releasedKey <= 0xf);
-                        keyboard.ReleaseKey(releasedKey);
-#ifdef DEBUG
-                        std::fprintf(stdout, "[info] :: key released index=%d\n", releasedKey);
-#endif
-                    }
-                }
-                if (event.type == SDL_KEYDOWN) {
-
-                    uint8_t pressedKey = 0;
-                    auto key = event.key.keysym.sym;
-
-                    // If Q or Escape is pressed quit the emulator.
-                    if (key == SDLK_ESCAPE || key == SDLK_q) {
-                        std::exit(EXIT_FAILURE);
-                    }
-                    
-                    // 0 to 9
-                    if (key >= SDLK_0 && key <= SDLK_9) {
-                        pressedKey = (key - '0');
-                        keyboard.PressKey(pressedKey);
-#ifdef DEBUG
-                        std::fprintf(stdout, "[info] :: key pressed index=%d\n", pressedKey);
-#endif
-                    }
-                    if (key >= SDLK_a && key <= SDLK_f) {
-                        pressedKey = (key - 'a') + 0xa;
-                        keyboard.PressKey(pressedKey);
-#ifdef DEBUG
-                        std::fprintf(stdout, "[info] :: key pressed index=%d\n", pressedKey);
-#endif
-                    }
-#ifdef DEBUG
-                    std::cerr << "[info] :: pressed key number: " << static_cast<char>(key) << "\n";
-#endif
-
-                    if (this->destinationKeyRegister.has_value()) {
-                        auto x = this->destinationKeyRegister.value();
-                        assert(0 <= x && x <= 0xf);
-                        assert(0 <= pressedKey && pressedKey <= 0xf);
-                        this->cpu.V[x] = pressedKey;
-                        this->destinationKeyRegister = std::nullopt;
-                        this->currentStatuts = Status::RUNNING;
-                    }
-                }
-            });
-
-            if (currentStatuts != Status::RUNNING) {
-                // The timer needs to be synchronized
+            if (currentStatuts == Status::WAITING_FOR_KEY) {
+                if (cpu.delayTimer > 0) { cpu.delayTimer--; }
+                if (cpu.soundTimer > 0) { cpu.soundTimer--; }
                 screen.Delay();
                 continue;
             }
 
-            auto start = std::chrono::steady_clock::now();
-
-            // Fecth the next instruction. The instruction has 4 nibbles.
-            uint16_t instr = memory.Read16(cpu.PC);
-            cpu.PC += 2;
-
-#if DEBUG
-            std::fprintf(stdout, "[info] :: executing instruction '0x%x'\n", instr);
-#endif
-
-            // Decode the instruction
-            uint8_t opcode = FIRST_NIBBLE(instr);
-            switch (opcode) {
-                case 0x0: {
-                    // Clear Screen
-                    if (instr == 0x00E0) {
-                        ClearScreen(instr);
-                    }
-                    else if (instr == 0x00EE) {
-                        ReturnFromRoutine(instr);
-                    }
-                    else {
-                        std::cerr << "[error] illegal instruction...\n";
-                        std::exit(EXIT_FAILURE);
-                    }
-                    break;
-                }
-                case 0x1: {
-                    Jump(instr);
-                    break;
-                }
-                case 0x2: {
-                    Call(instr);
-                    break;
-                }
-                case 0x3: {
-                    SkipEqual(instr, false);
-                    break;
-                }
-                case 0x4: {
-                    SkipNotEqual(instr, false);
-                    break;
-                }
-                case 0x5: {
-                    SkipEqual(instr, true);
-                    break;
-                }
-                case 0x6: {
-                    LoadIntoV(instr);
-                    break;
-                }
-                case 0x7: {
-                    Add(instr);
-                    break;
-                }
-                case 0x8: {
-                    Assignment8(instr);
-                    break;
-                }
-                case 0x9: {
-                    SkipNotEqual(instr, true);
-                    break;
-                }
-                case 0xA: {
-                    SetIndexRegister(instr);
-                    break;
-                }
-                case 0xB: {
-                    Jump(instr, true);
-                    break;
-                }
-                case 0xC: {
-                    Random(instr);
-                    break;
-                }
-                case 0xD: {
-                    DrawPixels(instr);
-                    break;
-                }
-                case 0xE: { 
-                    SkipIfKey(instr);
-                    break;
-                }
-                case 0xF: {
-                    FDispatcher(instr);
-                    break;
-                }
-                default: {
-                    std::cerr << "[error] :: Not implemented yet: 0x" << std::hex << instr << ".\n";
-                    std::exit(-1);
-                }
+            // Get the current value of the high resolution counter.
+            const auto start = SDL_GetPerformanceCounter(); 
+            for (std::size_t i = 0; i < instructionPerSecond; i++) {
+                ExecuteNextInstruction();
             }
+            const auto end = SDL_GetPerformanceCounter();
 
-            auto elapsed =
-                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
+            const double elapsed = static_cast<double>((end - start) * 1000) / SDL_GetPerformanceFrequency();
 
-            screen.Delay();
+            if (cpu.delayTimer > 0) { cpu.delayTimer--; }
+            if (cpu.soundTimer > 0) { cpu.soundTimer--; }
+            screen.Delay(elapsed);
+
             if (shouldRedraw) {
                 screen.Update();
                 shouldRedraw = false;
