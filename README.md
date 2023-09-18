@@ -19,7 +19,8 @@ and draw sprites on the screen, and play games!
 - [ ] Showing CPU status in a separate window.
 - [x] Implementing missing arithmetic instructions with carry.
 - [ ] Parsing CLI options (scale size, colors, and so on...)
-- [ ] Implement timers and sound.
+- [x] Implement timers
+- [x] Implement sound
 - [ ] Separate namespace in different files.
 - [ ] Creating a CMake file.
 - [ ] Run on other platforms (e.g., Linux).
