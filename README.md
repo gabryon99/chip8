@@ -10,7 +10,7 @@ and draw sprites on the screen, and play games!
 - [x] IBM Logo
 - [x] BPM Viewer
 - [x] Chip8 Logo
-- [ ] KeyPad Test
+- [x] KeyPad Test
 - [x] Zero Demo
 
 ### Next Features
