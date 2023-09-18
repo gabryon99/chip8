@@ -258,7 +258,7 @@ class Memory {
     }
 
     template <size_t Size>
-    constexpr void WriteBytes(const std::array<uint8_t, Size> input, const std::size_t offset) {
+    constexpr void WriteBytes(const std::array<uint8_t, Size>&& input, const std::size_t offset) {
         if (input.size() + offset >= MEMORY_SIZE) {
             throw std::invalid_argument{"The data to write could not be stored."};
         }
@@ -267,7 +267,7 @@ class Memory {
         std::copy_n(input.begin(), input.size(), dest);
     }
 
-    void WriteBytes(const std::vector<uint8_t>&& input, const std::size_t offset = 0) {
+    constexpr void WriteBytes(const std::vector<uint8_t>&& input, const std::size_t offset = 0) {
         if (input.size() + offset >= MEMORY_SIZE) {
             throw std::invalid_argument{"The data to write could not be stored."};
         }
@@ -760,7 +760,11 @@ class Emulator {
         std::srand(std::time(nullptr));
     }
 
-    void LoadFont(const chip8::graphics::fonts::Font font) { memory.WriteBytes(font, graphics::fonts::FONT_ADDRESS_OFFSET); }
+    Emulator(const chip8::graphics::fonts::Font&& font) {
+        LoadFont(std::move(font));
+    }
+
+    void LoadFont(const chip8::graphics::fonts::Font&& font) { memory.WriteBytes(std::move(font), graphics::fonts::FONT_ADDRESS_OFFSET); }
 
     void LoadRom(const std::vector<uint8_t>&& rom) {
         memory.WriteBytes(std::move(rom), chip8::system::Cpu::STARTING_PC);
@@ -831,9 +835,9 @@ int main(const int argc, const char** argv) {
     auto rom = ReadBinaryFile(argv[1]);
 
     chip8::Emulator emulator{};
-    emulator.LoadFont(chip8::graphics::fonts::DEFAULT);
-    emulator.LoadRom(std::move(rom));
 
+    emulator.LoadFont(std::move(chip8::graphics::fonts::DEFAULT));
+    emulator.LoadRom(std::move(rom));
     emulator.Run();
 
     return EXIT_SUCCESS;
